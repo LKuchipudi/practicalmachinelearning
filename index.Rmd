@@ -1,22 +1,102 @@
 ---
-title: "Practical Machine Learning Course Project"
+title: "PML Project: Human Activity Recognition"
 author: "Lakshmi Kuchipudi"
-date: "Monday, December 21, 2015"
+date: "Thursday, December 24, 2015"
 output: html_document
 ---
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r}
-summary(cars)
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+                      echo=FALSE, warning=FALSE, message=FALSE)
 ```
 
-You can also embed plots, for example:
-
-```{r, echo=FALSE}
-plot(cars)
+**Feature Selection: **
+The original data set had 160 variables of which 101 are descriptive statistics computed over a group of data. These statistics were not used in model building. We also excluded names and index variables. All the 59 variables were used as predictor for training our model.
+```{r rdata, results="hide"}
+## Reading the training and the validation data sets
+setwd("C:\\Source\\Discovery\\courses\\Practical Machine Learning\\Project")
+pmltraining = read.csv("pml-trainingrefined.csv",header = TRUE, sep=",")
+pmlvalidation = read.csv("pml-testingrefined.csv",header = TRUE, sep=",")
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+**Data Partition: **
+The data set was partitioned into training(70%) and test data sets(30%).
+```{r DP, results="hide"}
+## Partitioning the Training data to training(70%) and test data sets(30%)
+library(caret)
+inTrain = createDataPartition(pmltraining$classe, p = 3/4)[[1]]
+training = pmltraining[ inTrain,]
+testing = pmltraining[-inTrain,]
+lapply(pmltraining, class) #- Identify all predictors types
+set.seed(125)
+```
+
+**Machine Learning Models selected:**
+The response variable is a categorical variables with 5 levels - A, B, C, D, E. This is a classification problem so the models considered are Decision trees and Random Forests.
+
+*Decision trees* with 10 fold cross validation and 3 repeats was used to train the model on the partitioned training data set. The out of sample accuracy was approximately 96%.
+```{r DTmodel, cache=TRUE}
+## Decision Trees with 10-fold cross validation
+cvCtrl <- trainControl(method = "repeatedcv", repeats = 3, classProbs = TRUE)
+modFitDTCV <- train(classe ~ .-user_name, data = training, method = "rpart", tuneLength = 30, metric = "ROC", trControl = cvCtrl)
+save(modFitDTCV, file="pmlDTCVmodel.rds")
+testpredict=predict(modFitDTCV,newdata=testing)
+confusionMatrix(testing$classe,testpredict)
+```
+ 
+*Random forests* approach has been modelled using both "random forest" function in random forest package as well as the "rf" in the caret package. Both approaches showed similar results. The variable  cvtd_timestamp was also excluded since its a factor with 17 levels. Adding this variable slowed down the training process. When excluded, significantly improved the performance. The "random forest" function from random forest package took about 10sec versus "rf" in the caret package which took about 10min. The out of sample accuracy for this model was close to 100%.
+```{r RFmodel, cache=TRUE}
+## Random forest package and doParallel
+library(doParallel)
+library(randomForest)
+registerDoParallel(cores=2)
+modFitrfpack= foreach(y=seq(10), .combine=combine, .packages='randomForest') %dopar%
+{
+  set.seed(y)
+  randomForest(classe ~ .-user_name -cvtd_timestamp, training, ntree=50, norm.votes=FALSE)
+}
+save(modFitrfpack, file="pmlRFpackmodel.rds")
+testpredictrf=predict(modFitrfpack,newdata=testing)
+confusionMatrix(testing$classe,testpredictrf)
+```
+```{r RFmodelC, cache=TRUE, results="hide"}
+## Caret package "rf" and doParallel
+library(doParallel)
+library(randomForest)
+library(caret)
+registerDoParallel(cores=2)
+cvCtrl = trainControl(method = "oob", classProbs = TRUE, summaryFunction = twoClassSummary, selectionFunction = "best")
+newGrid=data.frame(.mtry=5)
+modFitrf= foreach(1, .packages='caret') %dopar%
+{
+   train(classe ~ .-user_name -cvtd_timestamp, data = training, trControl = cvCtrl, method = "rf",  tuneGrid = newGrid)
+}
+save(modFitrf, file="pmlRFmodel.rds")
+testpredictrf=predict(modFitrf,newdata=testing)
+testpredictrf=unlist(testpredictrf)
+confusionMatrix(testing$classe,testpredictrf)
+```
+
+**Model Selection: **
+The model built using random forest resulted in the highest accuracy approximately 100% and was selected to predict the manner in which they did the exercises with the response variable classe.
+
+The top 5 most *important variables* in random forests approach are new_window, raw_timestamp_part_2, gyros_arm_z, gyros_forearm_x, gyros_dumbbell_z.
+```{r VI, results="hide"}
+## Variable importance using Random forest
+df = varImp(modFitrfpack)
+df.sorted<-data.frame(Overall=df$Overall[order(df$Overall, decreasing = TRUE)],row.names=row.names(df)[order(df)])
+```
+*Plot showing the out of sample accuracy for model built using random forests approach*
+```{r PlotA, echo=FALSE}
+## Plot for model accuracy using Random Forests
+cm=data.frame(testpredictrf,testing$classe)
+p = ggplot(cm, aes(x=testpredictrf,y=testing$classe))
+p <- p + geom_jitter(position = position_jitter(width = 0.25, height = 0.25)) + xlab("Predicted Classe") + ylab("Actual Classe")
+p
+```
+**Validation dataset: **
+The reponse variable "classe" values for the validation dataset were predicted using both the models built using Decision Trees as well as Random Forest models. Both the model resulted in same values.
+```{r vd}
+validpredictDT = predict(modFitDTCV, newdata=pmlvalidation)
+validpredictRF = predict(modFitrf, newdata=pmlvalidation)
+```
